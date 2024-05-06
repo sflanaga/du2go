@@ -114,6 +114,19 @@ func walk(dir string, queue chan string) {
 
 }
 
+type DirInfo struct {
+	Name         string
+	imm_files    uint64
+	imm_dirs     uint64
+	imm_old_file int64
+	imm_new_file int64
+	rec_files    uint64
+	rec_dirs     uint64
+	rec_old_file int64
+	rec_new_file int64
+	children     []*DirInfo
+}
+
 type FileInfo struct {
 	Name  string
 	IsDir bool
@@ -157,25 +170,37 @@ func create_start_ticker(msg *string) *time.Ticker {
 	return ticker
 }
 
-func walkGo(dir string, wg *sync.WaitGroup, limitworkers uint32, workers *uint32) {
+var tabs = string("\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t")
+
+func treeWalk(dir *DirInfo, depth int) {
+	fmt.Println(tabs[0:depth], dir.Name, " ", depth)
+	for _, child := range dir.children {
+		treeWalk(child, depth+1)
+	}
+}
+
+func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers uint32, workers *uint32) {
 	wg.Add(1)
 	defer wg.Done()
-	files, err := os.ReadDir(dir)
+	files, err := os.ReadDir(dir.Name)
 	if err != nil {
 		fmt.Println("Error reading directory:", err)
 		return
 	}
 	for _, file := range files {
-		var cleanPath = path.Join(dir, file.Name())
+		var cleanPath = path.Join(dir.Name, file.Name())
 		if file.IsDir() {
+			subdir := new(DirInfo)
+			subdir.Name = cleanPath
+			dir.children = append(dir.children, subdir)
 			atomic.AddUint64(&countDirs, 1)
 			// fmt.Println(cleanPath, file.IsDir())
 			// cheesey simple work-stealing
 			if atomic.LoadUint32(workers) < limitworkers {
 				atomic.AddUint32(workers, 1)
-				go walkGo(cleanPath, wg, limitworkers, workers)
+				go walkGo(subdir, wg, limitworkers, workers)
 			} else {
-				walkGo(cleanPath, wg, limitworkers, workers)
+				walkGo(subdir, wg, limitworkers, workers)
 			}
 		} else {
 			stats, err_st := file.Info()
@@ -193,7 +218,7 @@ func walkGo(dir string, wg *sync.WaitGroup, limitworkers uint32, workers *uint32
 
 func main() {
 	start := time.Now()
-	absPath, err := filepath.Abs("/")
+	absPath, err := filepath.Abs("..")
 	if err != nil {
 		fmt.Println("Error getting absolute path:", err)
 		return
@@ -201,12 +226,15 @@ func main() {
 	wg := &sync.WaitGroup{}
 	var msg = "tree scan"
 	ticker := create_start_ticker(&msg)
-	walkGo(absPath, wg, 10, new(uint32))
+	root := DirInfo{Name: absPath}
+	walkGo(&root, wg, 10, new(uint32))
 
 	wg.Wait()
 	elapse := time.Since(start)
 	ticker.Stop()
 	fmt.Println("Total size:", formatBytes(uint64(totalSize)), " in ", countFiles, " files and ", countDirs, " directories", " done in ", elapse)
+
+	treeWalk(&root, 0)
 
 }
 
