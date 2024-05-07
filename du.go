@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io/fs"
 	"math"
 	"os"
 	"path"
@@ -75,18 +76,17 @@ func NewMaxGlobalFile(limit int) *maxGlobalFile {
 var maxFiles *maxGlobalFile = nil
 
 func (m *maxGlobalFile) setMaxFile(size int64, path *string) {
-	if size > atomic.LoadInt64(&m.minFile) {
-		m.mtx.Lock()
-		defer m.mtx.Unlock()
+	m.mtx.Lock()
+	defer m.mtx.Unlock()
 
-		if size > atomic.LoadInt64(&m.minFile) {
-			m.mapMax.ReplaceOrInsert(PathSize{size: size, path: *path})
-			if m.mapMax.Len() > m.limits {
-				m.mapMax.DeleteMin()
-				atomic.StoreInt64(&m.minFile, size)
-			}
-		} else {
-			fmt.Println("FLIP FLOP ---------------------")
+	currMin := atomic.LoadInt64(&m.minFile)
+	if size > currMin {
+		m.mapMax.ReplaceOrInsert(PathSize{size: size, path: *path})
+		if m.mapMax.Len() > m.limits {
+			m.mapMax.DeleteMin()
+		}
+		if currMin > size {
+			atomic.StoreInt64(&m.minFile, size)
 		}
 	}
 }
@@ -128,7 +128,7 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 			} else {
 				walkGo(subdir, wg, limitworkers, workers, false)
 			}
-		} else {
+		} else if file.Type().IsRegular() || (fs.ModeIrregular&file.Type() != 0) {
 			stats, err_st := file.Info()
 			if err_st != nil {
 				fmt.Println("... Error reading file info:", err_st)
@@ -158,6 +158,8 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 
 			maxFiles.setMaxFile(sz, &cleanPath)
 
+		} else {
+			fmt.Println("... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
 		}
 	}
 
@@ -212,6 +214,7 @@ func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string) {
 }
 
 func main() {
+	start := time.Now()
 
 	rootDir := flag.String("d", ".", "root directory to scan")
 	ticker_duration := flag.Duration("i", 1*time.Second, "ticker duration")
@@ -227,7 +230,6 @@ func main() {
 	flag.Parse()
 
 	maxFiles = NewMaxGlobalFile(*summaryLimit)
-	start := time.Now()
 	absPath, err := filepath.Abs(*rootDir)
 	if err != nil {
 		fmt.Println("Error getting absolute path:", err)
@@ -277,15 +279,19 @@ func main() {
 
 	walkTreeSummary(root, *summaryLimit, 0)
 
-	fmt.Println()
-	printSummary(maxDirByImmSize, true, "direstories by total file size immediately in it")
-	fmt.Println()
-	printSummary(maxDirByImmCount, false, "direstories by file count immediately in it")
-	fmt.Println()
-	printSummary(maxDirByImmDirCount, false, "direstories by directory count immediately in it")
-	fmt.Println()
-	printSummary(maxDirByRecSize, true, "direstories by total file size recursively in it")
-	fmt.Println()
-	fmt.Println("Total size:", formatBytes(uint64(totalSize)), " in ", countFiles, " files and ", countDirs, " directories", " done in ", elapse)
+	if *dumpFullDetails {
+		treeWalkDetails(root, 0, &start)
+	} else {
+		fmt.Println()
+		printSummary(maxDirByImmSize, true, "directories by total file size immediately in it")
+		fmt.Println()
+		printSummary(maxDirByImmCount, false, "directories by file count immediately in it")
+		fmt.Println()
+		printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it")
+		fmt.Println()
+		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it")
+		fmt.Println()
+		fmt.Println("Total size:", formatBytes(uint64(totalSize)), " in ", countFiles, " files and ", countDirs, " directories", " done in ", elapse)
+	}
 
 }

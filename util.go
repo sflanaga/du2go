@@ -108,6 +108,27 @@ func modeToString(mode fs.FileMode) string {
 	}
 	return str
 }
+func modeToStringLong(mode fs.FileMode) string {
+	var str = ""
+	if mode.IsDir() {
+		str += "dir"
+	} else if mode.IsRegular() {
+		str += "file"
+	} else if mode&fs.ModeSymlink != 0 {
+		str += "symlink"
+	} else if mode&fs.ModeNamedPipe != 0 {
+		str += "pipe"
+	} else if mode&fs.ModeSocket != 0 {
+		str += "socket"
+	} else if mode&fs.ModeDevice != 0 {
+		str += "device"
+	} else if mode&fs.ModeCharDevice != 0 {
+		str += "char-device"
+	} else if mode&fs.ModeIrregular != 0 {
+		str += "irregular"
+	}
+	return str
+}
 
 var totalSize uint64 = 0
 var countFiles uint64 = 0
