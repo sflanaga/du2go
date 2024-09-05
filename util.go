@@ -1,10 +1,10 @@
 package main
 
 import (
-	"os"
 	"fmt"
 	"io/fs"
 	"math"
+	"os"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -136,6 +136,11 @@ var countFiles uint64 = 0
 var countDirs uint64 = 0
 var goroutines int32 = 0
 
+var filestatErrors uint64 = 0
+var notDirOrFile uint64 = 0
+var filterDirs uint64 = 0
+var dirListErrors uint64 = 0
+
 func create_start_ticker(msg *string, interval *time.Duration) *time.Ticker {
 	ticker := time.NewTicker(*interval)
 	go func() {
@@ -201,7 +206,7 @@ func mod2TimestampStr(filemod int64, now *time.Time) string {
 	if filemod == math.MaxInt64 || filemod == math.MinInt64 {
 		return "NA"
 	} else {
-		hours := time2duration(filemod, now).Hours()/24.0
+		hours := time2duration(filemod, now).Hours() / 24.0
 		return fmt.Sprintf("%.3f", hours)
 		// return time.Unix(filemod, 0).Format("2006/01/02T15:04:05")
 	}
@@ -219,10 +224,10 @@ func treeWalkDetails(dir *DirInfo, depth int, start *time.Time, flatUnits bool) 
 			mod2str(dir.imm_old_file, start), mod2str(dir.imm_new_file, start), mod2str(dir.rec_old_file, start), mod2str(dir.rec_new_file, start),
 			depth)
 	} else {
-		fmt.Printf("%s,%d,%d,%d,%d,%d,%d,%s,%s,%s,%s,%d\n", dir.name,  dir.imm_size,  dir.imm_files,  dir.imm_dirs, 
-			dir.rec_size,  dir.rec_files,  dir.rec_dirs, 
-			mod2TimestampStr(dir.imm_old_file, start),  mod2TimestampStr(dir.imm_new_file, start),
-			mod2TimestampStr(dir.rec_old_file, start),  mod2TimestampStr(dir.rec_new_file, start), 
+		fmt.Printf("%s,%d,%d,%d,%d,%d,%d,%s,%s,%s,%s,%d\n", dir.name, dir.imm_size, dir.imm_files, dir.imm_dirs,
+			dir.rec_size, dir.rec_files, dir.rec_dirs,
+			mod2TimestampStr(dir.imm_old_file, start), mod2TimestampStr(dir.imm_new_file, start),
+			mod2TimestampStr(dir.rec_old_file, start), mod2TimestampStr(dir.rec_new_file, start),
 			depth)
 	}
 	for _, child := range dir.children {

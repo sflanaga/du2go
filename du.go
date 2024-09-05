@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/google/btree"
+	"golang.org/x/sync/semaphore"
 )
 
 type DirInfo struct {
@@ -91,21 +93,38 @@ func (m *maxGlobalFile) setMaxFile(size int64, path *string) {
 	}
 }
 
-func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32, goroutine bool) {
+var fsFilter = map[string]bool{
+	"/proc": true,
+	"/dev":  true,
+	"/sys":  true,
+}
 
+func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers *int32, goroutine bool, depth int) {
 	if goroutine {
 		// we need to release the allocated thread/goroutine if we stop early
 		// we only need to do this when we did NOT steal the next directory/task
 		// also note that defer DOES work conditionally here because it works at
 		// the end of the current function and NOT the current scope
-		defer atomic.AddInt32(workers, -1)
-		wg.Add(1)
-		defer wg.Done()
+		defer limitworkers.Release(1)
+	}
+
+	// goofy special filters
+	if depth <= 1 {
+		if _, ok := fsFilter[dir.name]; ok {
+			atomic.AddUint64(&filterDirs, 1)
+			if debug {
+				fmt.Fprintf(os.Stderr, "skipping path %s as special\n", dir.name)
+			}
+			return
+		}
 	}
 
 	files, err := os.ReadDir(dir.name)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error reading directory:", err)
+		atomic.AddUint64(&dirListErrors, 1)
+		if debug {
+			fmt.Fprintln(os.Stderr, "Error reading directory:", err)
+		}
 		return
 	}
 	newest := int64(math.MinInt64)
@@ -122,16 +141,19 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 			// fmt.Println(cleanPath, file.IsDir())
 			// cheesey simple work-stealing
 
-			if atomic.LoadInt32(workers) < limitworkers {
-				atomic.AddInt32(workers, 1)
-				go walkGo(subdir, wg, limitworkers, workers, true)
+			if limitworkers.TryAcquire(1) {
+				// if atomic.LoadInt32(workers) < limitworkers {
+				go walkGo(debug, subdir, limitworkers, workers, true, depth+1)
 			} else {
-				walkGo(subdir, wg, limitworkers, workers, false)
+				walkGo(debug, subdir, limitworkers, workers, false, depth+1)
 			}
 		} else if file.Type().IsRegular() || (fs.ModeIrregular&file.Type() != 0) {
 			stats, err_st := file.Info()
 			if err_st != nil {
-				fmt.Fprintln(os.Stderr, "... Error reading file info:", err_st)
+				atomic.AddUint64(&filestatErrors, 1)
+				if debug {
+					fmt.Fprintln(os.Stderr, "... Error reading file info:", err_st)
+				}
 				continue
 			}
 			sz := stats.Size()
@@ -159,7 +181,10 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 			maxFiles.setMaxFile(sz, &cleanPath)
 
 		} else {
-			fmt.Fprintln(os.Stderr, "... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
+			atomic.AddUint64(&notDirOrFile, 1)
+			if debug {
+				fmt.Fprintln(os.Stderr, "... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
+			}
 		}
 	}
 
@@ -206,15 +231,30 @@ func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string, flatUn
 	tree.Descend(func(value PathSize) bool {
 		if bytes {
 			if flatUnits {
-				fmt.Printf("%s %s\n", formatBytes(uint64(value.size)), value.path)
+				fmt.Printf("%12d %s\n", uint64(value.size), value.path)
 			} else {
-				fmt.Printf("%d %s\n", uint64(value.size), value.path)
+				fmt.Printf("%8s %s\n", formatBytes(uint64(value.size)), value.path)
 			}
 		} else {
-			fmt.Printf("%d %s\n", value.size, value.path)
+			fmt.Printf("%8d %s\n", value.size, value.path)
 		}
 		return true
 	})
+}
+
+func printSkipAndError() {
+	if filestatErrors > 0 {
+		fmt.Printf("%8d file stat errors\n", filestatErrors)
+	}
+	if notDirOrFile > 0 {
+		fmt.Printf("%8d nodes not a file or directory\n", notDirOrFile)
+	}
+	if filterDirs > 0 {
+		fmt.Printf("%8d special directories filtered\n", filterDirs)
+	}
+	if dirListErrors > 0 {
+		fmt.Printf("%8d directories that cannot be listed\n", dirListErrors)
+	}
 }
 
 func main() {
@@ -223,10 +263,13 @@ func main() {
 	rootDir := flag.String("d", ".", "root directory to scan")
 	ticker_duration := flag.Duration("i", 1*time.Second, "ticker duration")
 	dumpFullDetails := flag.Bool("D", false, "dump full details")
-	flatUnits := flag.Bool("F", false, "use flat units of bytes, and hours old - useful for simpler post processing")
+	flatUnits := flag.Bool("F", false, "use basic units for size and age - useful for simpler post processing")
 	cpuNum := runtime.NumCPU()
 	threadLimit := flag.Int("t", cpuNum, "limit number of threads")
 	summaryLimit := flag.Int("l", 10, "limit summaries to N number")
+	debug := flag.Bool("v", false, "keep intermediate error messages quiet")
+
+	var workerSema = semaphore.NewWeighted(int64(*threadLimit))
 
 	flag.Usage = func() {
 		fmt.Printf("Usage: %s [OPTIONS]\n", path.Base(os.Args[0]))
@@ -237,7 +280,7 @@ func main() {
 	if flag.NArg() > 0 {
 		fmt.Fprintln(os.Stderr, "Options error - Extra/orphaned arguments - most likely not using -d option")
 		for i, arg := range flag.Args() {
-			fmt.Fprintln(os.Stderr, "\t[%d]: %s\n", i+1, arg)
+			fmt.Fprintf(os.Stderr, "\t[%d]: %s\n", i+1, arg)
 		}
 		os.Exit(2)
 	}
@@ -248,7 +291,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error getting absolute path:", err)
 		return
 	}
-	wg := &sync.WaitGroup{}
+	// wg := &sync.WaitGroup{}
 	var msg = "tree scan"
 	var ticker *time.Ticker = nil
 
@@ -257,9 +300,18 @@ func main() {
 	}
 	root := NewDirInfo(absPath)
 	goroutines = int32(0)
-	walkGo(root, wg, int32(*threadLimit), &goroutines, true)
+	var ctx = context.Background()
 
-	wg.Wait()
+	workerSema.Acquire(ctx, 1)
+	walkGo(*debug, root, workerSema, &goroutines, true, 0)
+	// wg.Wait()
+	workerSema.Acquire(ctx, int64(*threadLimit))
+
+	// for !workerSema.TryAcquire(int64(*threadLimit)) {
+	// 	fmt.Println("cannot get semaphore")
+	// 	time.Sleep(time.Duration(1 * 1_000_000_000))
+	// }
+
 	elapse := time.Since(start)
 	if ticker_duration.Seconds() != 0 {
 		ticker.Stop()
@@ -285,17 +337,23 @@ func main() {
 	// })
 
 	fmt.Printf("Scanned directory path: %s\n", *rootDir)
-	fmt.Println("Largest files (globally)")
-	maxFiles.mapMax.Descend(func(value PathSize) bool {
-		fmt.Printf("%s %s\n", formatBytes(uint64(value.size)), value.path)
-		return true
-	})
 
 	walkTreeSummary(root, *summaryLimit, 0)
 
 	if *dumpFullDetails {
 		treeWalkDetails(root, 0, &start, *flatUnits)
+		fmt.Println()
+		printSkipAndError()
 	} else {
+		fmt.Println("Largest files (globally)")
+		maxFiles.mapMax.Descend(func(value PathSize) bool {
+			if *flatUnits {
+				fmt.Printf("%12d %s\n", uint64(value.size), value.path)
+			} else {
+				fmt.Printf("%8s %s\n", formatBytes(uint64(value.size)), value.path)
+			}
+			return true
+		})
 		fmt.Println()
 		printSummary(maxDirByImmSize, true, "directories by total file size immediately in it", *flatUnits)
 		fmt.Println()
@@ -304,6 +362,8 @@ func main() {
 		printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it", *flatUnits)
 		fmt.Println()
 		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it", *flatUnits)
+		fmt.Println()
+		printSkipAndError()
 		fmt.Println()
 		fmt.Println("Total size:", formatBytes(uint64(totalSize)), "in", countFiles, "files and", countDirs, "directories", "done in", elapse)
 	}
