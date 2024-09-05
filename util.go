@@ -38,7 +38,7 @@ func minInt64(nums ...int64) int64 {
 	return currentMin
 }
 
-func formatDuration(d time.Duration) string {
+func formatDuration(d time.Duration, precision int) string {
 	if d == math.MaxInt64 {
 		return "NA"
 	}
@@ -47,6 +47,8 @@ func formatDuration(d time.Duration) string {
 		value time.Duration
 		label string
 	}{
+		{24 * 365 * time.Hour, "y"}, // Years
+		{24 * 7 * time.Hour, "w"}, // Days
 		{24 * time.Hour, "d"}, // Days
 		{time.Hour, "h"},      // Hours
 		{time.Minute, "m"},    // Minutes
@@ -56,8 +58,12 @@ func formatDuration(d time.Duration) string {
 	var result string
 
 	for _, unit := range units {
+		if precision <= 0 {
+			break
+		}
 		value := d / unit.value
 		if value > 0 {
+			precision -= 1
 			result += fmt.Sprintf("%d%s", value, unit.label)
 			d -= value * unit.value
 		}
@@ -199,7 +205,7 @@ func time2duration(filemod int64, now *time.Time) time.Duration {
 }
 
 func mod2str(filemod int64, now *time.Time) string {
-	return formatDuration(time2duration(filemod, now))
+	return formatDuration(time2duration(filemod, now),3)
 }
 
 func mod2TimestampStr(filemod int64, now *time.Time) string {
@@ -214,9 +220,15 @@ func mod2TimestampStr(filemod int64, now *time.Time) string {
 
 func treeWalkDetails(dir *DirInfo, depth int, start *time.Time, flatUnits bool) {
 	if depth == 0 {
-		fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "path", "imm_size", "imm_files", "imm_dirs",
-			"rec_size", "rec_files", "rec_dirs",
-			"imm_oldest", "imm_newest", "rec_oldest", "imm_oldest", "depth")
+		if flatUnits {
+			fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "path", "imm_size", "imm_files", "imm_dirs",
+				"rec_size", "rec_files", "rec_dirs",
+				"imm_oldest_days", "imm_newest_days", "rec_oldest_days", "imm_oldest_days", "depth")
+		} else {
+			fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "path", "imm_size", "imm_files", "imm_dirs",
+				"rec_size", "rec_files", "rec_dirs",
+				"imm_oldest", "imm_newest", "rec_oldest", "imm_oldest", "depth")
+		}
 	}
 	if !flatUnits {
 		fmt.Printf("%s,%s,%d,%d,%s,%d,%d,%s,%s,%s,%s,%d\n", dir.name, formatBytes(dir.imm_size), dir.imm_files, dir.imm_dirs,
