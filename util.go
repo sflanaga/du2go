@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"fmt"
 	"io/fs"
 	"math"
@@ -159,7 +160,7 @@ func create_start_ticker(msg *string, interval *time.Duration) *time.Ticker {
 
 			elapsedTime := time.Since(startTime)
 			x := float64(elapsedTime.Milliseconds()) / 1000.0
-			p.Printf("   %s %0.3f bytes %s/%s files: %d/%d  dirs: %d/%d  go-threads: %d\n",
+			p.Fprintf(os.Stderr, "   %s %0.3f bytes %s/%s files: %d/%d  dirs: %d/%d  go-threads: %d\n",
 				*msg, x, formatBytes(delta_totalSize), formatBytes(this_totalSize), delta_countFiles, this_countFiles, delta_countDirs, this_countDirs, this_go_routines)
 
 			last_totalSize = this_totalSize
@@ -189,7 +190,6 @@ func time2duration(filemod int64, now *time.Time) time.Duration {
 		}
 		delta_t := now_t - filemod
 		return time.Duration(delta_t) * time.Second
-
 	}
 }
 
@@ -197,17 +197,35 @@ func mod2str(filemod int64, now *time.Time) string {
 	return formatDuration(time2duration(filemod, now))
 }
 
-func treeWalkDetails(dir *DirInfo, depth int, start *time.Time) {
+func mod2TimestampStr(filemod int64, now *time.Time) string {
+	if filemod == math.MaxInt64 || filemod == math.MinInt64 {
+		return "NA"
+	} else {
+		hours := time2duration(filemod, now).Hours()/24.0
+		return fmt.Sprintf("%.3f", hours)
+		// return time.Unix(filemod, 0).Format("2006/01/02T15:04:05")
+	}
+}
+
+func treeWalkDetails(dir *DirInfo, depth int, start *time.Time, flatUnits bool) {
 	if depth == 0 {
 		fmt.Printf("%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n", "path", "imm_size", "imm_files", "imm_dirs",
 			"rec_size", "rec_files", "rec_dirs",
 			"imm_oldest", "imm_newest", "rec_oldest", "imm_oldest", "depth")
 	}
-	fmt.Printf("%s,%s,%d,%d,%s,%d,%d,%s,%s,%s,%s,%d\n", dir.name, formatBytes(dir.imm_size), dir.imm_files, dir.imm_dirs,
-		formatBytes(dir.rec_size), dir.rec_files, dir.rec_dirs,
-		mod2str(dir.imm_old_file, start), mod2str(dir.imm_new_file, start), mod2str(dir.rec_old_file, start), mod2str(dir.rec_new_file, start),
-		depth)
+	if !flatUnits {
+		fmt.Printf("%s,%s,%d,%d,%s,%d,%d,%s,%s,%s,%s,%d\n", dir.name, formatBytes(dir.imm_size), dir.imm_files, dir.imm_dirs,
+			formatBytes(dir.rec_size), dir.rec_files, dir.rec_dirs,
+			mod2str(dir.imm_old_file, start), mod2str(dir.imm_new_file, start), mod2str(dir.rec_old_file, start), mod2str(dir.rec_new_file, start),
+			depth)
+	} else {
+		fmt.Printf("%s,%d,%d,%d,%d,%d,%d,%s,%s,%s,%s,%d\n", dir.name,  dir.imm_size,  dir.imm_files,  dir.imm_dirs, 
+			dir.rec_size,  dir.rec_files,  dir.rec_dirs, 
+			mod2TimestampStr(dir.imm_old_file, start),  mod2TimestampStr(dir.imm_new_file, start),
+			mod2TimestampStr(dir.rec_old_file, start),  mod2TimestampStr(dir.rec_new_file, start), 
+			depth)
+	}
 	for _, child := range dir.children {
-		treeWalkDetails(child, depth+1, start)
+		treeWalkDetails(child, depth+1, start, flatUnits)
 	}
 }

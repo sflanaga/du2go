@@ -105,7 +105,7 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 
 	files, err := os.ReadDir(dir.name)
 	if err != nil {
-		fmt.Println("Error reading directory:", err)
+		fmt.Fprintln(os.Stderr, "Error reading directory:", err)
 		return
 	}
 	newest := int64(math.MinInt64)
@@ -131,7 +131,7 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 		} else if file.Type().IsRegular() || (fs.ModeIrregular&file.Type() != 0) {
 			stats, err_st := file.Info()
 			if err_st != nil {
-				fmt.Println("... Error reading file info:", err_st)
+				fmt.Fprintln(os.Stderr, "... Error reading file info:", err_st)
 				continue
 			}
 			sz := stats.Size()
@@ -159,7 +159,7 @@ func walkGo(dir *DirInfo, wg *sync.WaitGroup, limitworkers int32, workers *int32
 			maxFiles.setMaxFile(sz, &cleanPath)
 
 		} else {
-			fmt.Println("... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
+			fmt.Fprintln(os.Stderr, "... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
 		}
 	}
 
@@ -201,11 +201,15 @@ func walkTreeSummary(dir *DirInfo, sumLimit int, depth int) {
 	}
 }
 
-func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string) {
+func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string, flatUnits bool) {
 	fmt.Println(title)
 	tree.Descend(func(value PathSize) bool {
 		if bytes {
-			fmt.Printf("%s %s\n", formatBytes(uint64(value.size)), value.path)
+			if flatUnits {
+				fmt.Printf("%s %s\n", formatBytes(uint64(value.size)), value.path)
+			} else {
+				fmt.Printf("%d %s\n", uint64(value.size), value.path)
+			}
 		} else {
 			fmt.Printf("%d %s\n", value.size, value.path)
 		}
@@ -219,6 +223,7 @@ func main() {
 	rootDir := flag.String("d", ".", "root directory to scan")
 	ticker_duration := flag.Duration("i", 1*time.Second, "ticker duration")
 	dumpFullDetails := flag.Bool("D", false, "dump full details")
+	flatUnits := flag.Bool("F", false, "use flat units of bytes, and hours old - useful for simpler post processing")
 	cpuNum := runtime.NumCPU()
 	threadLimit := flag.Int("t", cpuNum, "limit number of threads")
 	summaryLimit := flag.Int("l", 10, "limit summaries to N number")
@@ -229,10 +234,18 @@ func main() {
 	}
 	flag.Parse()
 
+	if flag.NArg() > 0 {
+		fmt.Fprintln(os.Stderr, "Options error - Extra/orphaned arguments - most likely not using -d option")
+		for i, arg := range flag.Args() {
+			fmt.Fprintln(os.Stderr, "\t[%d]: %s\n", i+1, arg)
+		}
+		os.Exit(2)
+	}
+
 	maxFiles = NewMaxGlobalFile(*summaryLimit)
 	absPath, err := filepath.Abs(*rootDir)
 	if err != nil {
-		fmt.Println("Error getting absolute path:", err)
+		fmt.Fprintln(os.Stderr, "Error getting absolute path:", err)
 		return
 	}
 	wg := &sync.WaitGroup{}
@@ -254,9 +267,9 @@ func main() {
 
 	treePerk(root, 0)
 
-	if *dumpFullDetails {
-		treeWalkDetails(root, 0, &start)
-	}
+	// if *dumpFullDetails {
+	// 	treeWalkDetails(root, 0, &start)
+	// }
 
 	// global max files size
 	// max dirs imm size
@@ -271,6 +284,7 @@ func main() {
 	// 	return true
 	// })
 
+	fmt.Printf("Scanned directory path: %s\n", *rootDir)
 	fmt.Println("Largest files (globally)")
 	maxFiles.mapMax.Descend(func(value PathSize) bool {
 		fmt.Printf("%s %s\n", formatBytes(uint64(value.size)), value.path)
@@ -280,18 +294,18 @@ func main() {
 	walkTreeSummary(root, *summaryLimit, 0)
 
 	if *dumpFullDetails {
-		treeWalkDetails(root, 0, &start)
+		treeWalkDetails(root, 0, &start, *flatUnits)
 	} else {
 		fmt.Println()
-		printSummary(maxDirByImmSize, true, "directories by total file size immediately in it")
+		printSummary(maxDirByImmSize, true, "directories by total file size immediately in it", *flatUnits)
 		fmt.Println()
-		printSummary(maxDirByImmCount, false, "directories by file count immediately in it")
+		printSummary(maxDirByImmCount, false, "directories by file count immediately in it", *flatUnits)
 		fmt.Println()
-		printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it")
+		printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it", *flatUnits)
 		fmt.Println()
-		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it")
+		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it", *flatUnits)
 		fmt.Println()
-		fmt.Println("Total size:", formatBytes(uint64(totalSize)), " in ", countFiles, " files and ", countDirs, " directories", " done in ", elapse)
+		fmt.Println("Total size:", formatBytes(uint64(totalSize)), "in", countFiles, "files and", countDirs, "directories", "done in", elapse)
 	}
 
 }
