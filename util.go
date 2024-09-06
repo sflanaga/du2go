@@ -6,9 +6,11 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/puzpuzpuz/xsync/v3"
 	"golang.org/x/text/language"
 	"golang.org/x/text/message"
 )
@@ -94,47 +96,45 @@ func formatBytes(bytes uint64) string {
 	}
 }
 
-func modeToString(mode fs.FileMode) string {
-	var str = ""
+func modeToChar(mode fs.FileMode) string {
 	if mode.IsDir() {
-		str += "D"
+		return "D"
 	} else if mode.IsRegular() {
-		str += "F"
+		return "F"
 	} else if mode&fs.ModeSymlink != 0 {
-		str += "L"
+		return "L"
 	} else if mode&fs.ModeNamedPipe != 0 {
-		str += "P"
+		return "P"
 	} else if mode&fs.ModeSocket != 0 {
-		str += "S"
-	} else if mode&fs.ModeDevice != 0 {
-		str += "D"
+		return "S"
 	} else if mode&fs.ModeCharDevice != 0 {
-		str += "C"
+		return "C"
+	} else if mode&fs.ModeDevice != 0 {
+		return "D"
 	} else if mode&fs.ModeIrregular != 0 {
-		str += "I"
+		return "I"
 	}
-	return str
+	return "?"
 }
 func modeToStringLong(mode fs.FileMode) string {
-	var str = ""
 	if mode.IsDir() {
-		str += "dir"
+		return "dir"
 	} else if mode.IsRegular() {
-		str += "file"
+		return "file"
 	} else if mode&fs.ModeSymlink != 0 {
-		str += "symlink"
+		return "symlink"
 	} else if mode&fs.ModeNamedPipe != 0 {
-		str += "pipe"
+		return "pipe"
 	} else if mode&fs.ModeSocket != 0 {
-		str += "socket"
-	} else if mode&fs.ModeDevice != 0 {
-		str += "device"
+		return "socket"
 	} else if mode&fs.ModeCharDevice != 0 {
-		str += "char-device"
+		return "char-device"
+	} else if mode&fs.ModeDevice != 0 {
+		return "device"
 	} else if mode&fs.ModeIrregular != 0 {
-		str += "irregular"
+		return "irregular"
 	}
-	return str
+	return "unknown"
 }
 
 var totalSize uint64 = 0
@@ -146,6 +146,25 @@ var filestatErrors uint64 = 0
 var notDirOrFile uint64 = 0
 var filterDirs uint64 = 0
 var dirListErrors uint64 = 0
+
+var countFileTypes = xsync.NewMapOf[fs.FileMode, int]()
+
+func printFilteredStringTypes(fileTypeMap *xsync.MapOf[fs.FileMode, int]) bool {
+	var list []string
+	var atLeastOne = false
+	fileTypeMap.Range(func(key fs.FileMode, value int) bool {
+		if value > 0 {
+			var s = fmt.Sprintf("%s=%d", modeToStringLong(key), value)
+			list = append(list, s)
+			atLeastOne = true
+		}
+		return true // Continue iterating
+	})
+	if atLeastOne {
+		fmt.Printf("count of \"off\" filetypes: %s\n", strings.Join(list, ", "))
+	}
+	return atLeastOne
+}
 
 func create_start_ticker(msg *string, interval *time.Duration) *time.Ticker {
 	ticker := time.NewTicker(*interval)

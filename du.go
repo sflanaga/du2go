@@ -78,17 +78,21 @@ func NewMaxGlobalFile(limit int) *maxGlobalFile {
 var maxFiles *maxGlobalFile = nil
 
 func (m *maxGlobalFile) setMaxFile(size int64, path *string) {
-	m.mtx.Lock()
-	defer m.mtx.Unlock()
-
+	// we do the quick check to avoid the mutex lock
 	currMin := atomic.LoadInt64(&m.minFile)
 	if size > currMin {
-		m.mapMax.ReplaceOrInsert(PathSize{size: size, path: *path})
-		if m.mapMax.Len() > m.limits {
-			m.mapMax.DeleteMin()
-		}
-		if currMin > size {
-			atomic.StoreInt64(&m.minFile, size)
+		m.mtx.Lock()
+		defer m.mtx.Unlock()
+
+		currMin := atomic.LoadInt64(&m.minFile)
+		if size > currMin {
+			m.mapMax.ReplaceOrInsert(PathSize{size: size, path: *path})
+			if m.mapMax.Len() > m.limits {
+				m.mapMax.DeleteMin()
+			}
+			if currMin > size {
+				atomic.StoreInt64(&m.minFile, size)
+			}
 		}
 	}
 }
@@ -106,6 +110,8 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers 
 		// also note that defer DOES work conditionally here because it works at
 		// the end of the current function and NOT the current scope
 		defer limitworkers.Release(1)
+		atomic.AddInt32(&goroutines, 1)
+		defer atomic.AddInt32(&goroutines, -1)
 	}
 
 	// goofy special filters
@@ -182,6 +188,17 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers 
 
 		} else {
 			atomic.AddUint64(&notDirOrFile, 1)
+			countFileTypes.Compute(file.Type(), func(oldValue int, loaded bool) (newValue int, delete bool) {
+				newValue = oldValue + 1
+				return
+			})
+
+			// _, _ = countFileTypes.LoadOrStore(key, func(value interface{}) interface{} {
+			// 	if value == nil {
+			// 		return 1
+			// 	}
+			// 	return value.(V) + 1
+			// })
 			if debug {
 				fmt.Fprintln(os.Stderr, "... skipping file:", cleanPath, " type: ", modeToStringLong(file.Type()))
 			}
@@ -246,9 +263,7 @@ func printSkipAndError() {
 	if filestatErrors > 0 {
 		fmt.Printf("%8d file stat errors\n", filestatErrors)
 	}
-	if notDirOrFile > 0 {
-		fmt.Printf("%8d nodes not a file or directory\n", notDirOrFile)
-	}
+	printFilteredStringTypes(countFileTypes)
 	if filterDirs > 0 {
 		fmt.Printf("%8d special directories filtered\n", filterDirs)
 	}
@@ -338,7 +353,9 @@ func main() {
 
 	fmt.Printf("Scanned directory path: %s\n", *rootDir)
 
+	_startTime := time.Now()
 	walkTreeSummary(root, *summaryLimit, 0)
+	fmt.Printf("walkTreeSummary, Execution time: %v\n", time.Since(_startTime))
 
 	if *dumpFullDetails {
 		treeWalkDetails(root, 0, &start, *flatUnits)
