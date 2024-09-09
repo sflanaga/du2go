@@ -280,7 +280,7 @@ func printSkipAndError() {
 	}
 }
 
-func myPrinter(t *statticker.Ticker, samplePeriod time.Duration, finalOutput bool) {
+func duStatPrinter(t *statticker.Ticker, samplePeriod time.Duration, finalOutput bool) {
 	timeStr := float64(time.Since(t.StartTime).Milliseconds()) / 1000.0
 	if finalOutput {
 		t.Buf = fmt.Appendf(t.Buf, "OVERALL[%s] %0.3f ", t.Msg, timeStr)
@@ -363,7 +363,7 @@ func main() {
 	var ticker *statticker.Ticker
 	if ticker_duration.Seconds() != 0 {
 		ticker = statticker.NewTicker("stats monitor", *ticker_duration, statList)
-		ticker.WithPrinter(myPrinter)
+		ticker.WithPrinter(duStatPrinter)
 		ticker.Start()
 	}
 
