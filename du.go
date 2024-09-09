@@ -19,6 +19,8 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+var isWindows = runtime.GOOS == "windows"
+
 var totalSize = statticker.NewStat("bytes", statticker.Bytes)
 var countFiles = statticker.NewStat("files", statticker.Count)
 var countDirs = statticker.NewStat("dir", statticker.Count)
@@ -56,12 +58,21 @@ func NewDirInfo(name string) *DirInfo {
 	}
 }
 
+type UserSize struct {
+	size int64
+	user string
+}
+
 type PathSize struct {
 	size int64
 	path string
 }
 
 func pathSizeLess(a, b PathSize) bool {
+	return a.size < b.size
+}
+
+func userSizeLess(a, b UserSize) bool {
 	return a.size < b.size
 }
 
@@ -108,6 +119,23 @@ var fsFilter = map[string]bool{
 	"/dev":  true,
 	"/sys":  true,
 }
+
+// func getUserIDFromFileInfo(fileInfo os.FileInfo) (uint32, error) {
+//     var uid uint32
+//     switch runtime.GOOS {
+//     case "windows":
+//         // On Windows, use the FileBasicInfo structure
+//         fileBasicInfo, err := syscall.GetFileInformationByHandle(fileInfo.Sys().(*syscall.Handle))
+//         if err != nil {
+//             return 0, fmt.Errorf("failed to get file information: %w", err)
+//         }
+//         uid = fileBasicInfo.Owner.LowPart
+//     default:
+//         // On Unix-like systems, use the Stat_t structure
+//         uid = fileInfo.Sys().(*syscall.Stat_t).Uid
+//     }
+//     return uid, nil
+// }
 
 func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutine bool, depth int) {
 	if goroutine {
@@ -169,6 +197,7 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutin
 				continue
 			}
 			sz := stats.Size()
+			// uid := getUserId(&stats)
 			if stats.ModTime().Unix() > newest {
 				newest = stats.ModTime().Unix()
 			}
@@ -309,6 +338,12 @@ func duStatPrinter(t *statticker.Ticker, samplePeriod time.Duration, finalOutput
 }
 
 func main() {
+	p := path.Base(os.Args[0])
+	s, _ := os.Stat(p)
+	x := getUserId(&s)
+	println("file: ", p, "uid: ", x)
+
+	os.Exit(1)
 
 	// var sl []*statticker.TStat
 	// var count = statticker.Stat("count").StatType(Count)
