@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
-	"os"
-	"runtime"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/puzpuzpuz/xsync/v3"
-	"golang.org/x/text/language"
-	"golang.org/x/text/message"
+	"github.com/sflanaga/statticker"
 )
+
+func assert(condition bool, message string) {
+	if !condition {
+		panic(message)
+	}
+}
 
 func maxInt64(nums ...int64) int64 {
 	if len(nums) == 0 {
@@ -50,11 +52,11 @@ func formatDuration(d time.Duration, precision int) string {
 		label string
 	}{
 		{24 * 365 * time.Hour, "y"}, // Years
-		{24 * 7 * time.Hour, "w"}, // Days
-		{24 * time.Hour, "d"}, // Days
-		{time.Hour, "h"},      // Hours
-		{time.Minute, "m"},    // Minutes
-		{time.Second, "s"},    // Seconds
+		{24 * 7 * time.Hour, "w"},   // Days
+		{24 * time.Hour, "d"},       // Days
+		{time.Hour, "h"},            // Hours
+		{time.Minute, "m"},          // Minutes
+		{time.Second, "s"},          // Seconds
 	}
 
 	var result string
@@ -74,7 +76,7 @@ func formatDuration(d time.Duration, precision int) string {
 	return result
 }
 
-func formatBytes(bytes uint64) string {
+func __formatBytes(bytes uint64) string {
 	const (
 		KB = 1024
 		MB = KB * 1024
@@ -137,11 +139,6 @@ func modeToStringLong(mode fs.FileMode) string {
 	return "unknown"
 }
 
-var totalSize uint64 = 0
-var countFiles uint64 = 0
-var countDirs uint64 = 0
-var goroutines int32 = 0
-
 var filestatErrors uint64 = 0
 var notDirOrFile uint64 = 0
 var filterDirs uint64 = 0
@@ -166,45 +163,10 @@ func printFilteredStringTypes(fileTypeMap *xsync.MapOf[fs.FileMode, int]) bool {
 	return atLeastOne
 }
 
-func create_start_ticker(msg *string, interval *time.Duration) *time.Ticker {
-	ticker := time.NewTicker(*interval)
-	go func() {
-		p := message.NewPrinter(language.English)
-		last_totalSize := uint64(0)
-		last_countFiles := uint64(0)
-		last_countDirs := uint64(0)
-
-		startTime := time.Now()
-		var m runtime.MemStats
-		for range ticker.C {
-			runtime.ReadMemStats(&m)
-			this_totalSize := atomic.LoadUint64(&totalSize)
-			this_countFiles := atomic.LoadUint64(&countFiles)
-			this_countDirs := atomic.LoadUint64(&countDirs)
-
-			this_go_routines := atomic.LoadInt32(&goroutines)
-
-			delta_totalSize := this_totalSize - last_totalSize
-			delta_countFiles := this_countFiles - last_countFiles
-			delta_countDirs := this_countDirs - last_countDirs
-
-			elapsedTime := time.Since(startTime)
-			x := float64(elapsedTime.Milliseconds()) / 1000.0
-			p.Fprintf(os.Stderr, "   %s %0.3f bytes %s/%s files: %d/%d  dirs: %d/%d  go-threads: %d\n",
-				*msg, x, formatBytes(delta_totalSize), formatBytes(this_totalSize), delta_countFiles, this_countFiles, delta_countDirs, this_countDirs, this_go_routines)
-
-			last_totalSize = this_totalSize
-			last_countFiles = this_countFiles
-			last_countDirs = this_countDirs
-		}
-	}()
-	return ticker
-}
-
 var tabs = string("                                                                                                    ")
 
 func treeWalk(dir *DirInfo, depth int) {
-	fmt.Printf("%9s %s %s %d\n", formatBytes(dir.imm_size), tabs[0:depth], dir.name, depth)
+	fmt.Printf("%9s %s %s %d\n", statticker.FormatBytes(dir.imm_size), tabs[0:depth], dir.name, depth)
 	for _, child := range dir.children {
 		treeWalk(child, depth+1)
 	}
@@ -224,7 +186,7 @@ func time2duration(filemod int64, now *time.Time) time.Duration {
 }
 
 func mod2str(filemod int64, now *time.Time) string {
-	return formatDuration(time2duration(filemod, now),3)
+	return formatDuration(time2duration(filemod, now), 3)
 }
 
 func mod2TimestampStr(filemod int64, now *time.Time) string {
@@ -250,8 +212,8 @@ func treeWalkDetails(dir *DirInfo, depth int, start *time.Time, flatUnits bool) 
 		}
 	}
 	if !flatUnits {
-		fmt.Printf("%s,%s,%d,%d,%s,%d,%d,%s,%s,%s,%s,%d\n", dir.name, formatBytes(dir.imm_size), dir.imm_files, dir.imm_dirs,
-			formatBytes(dir.rec_size), dir.rec_files, dir.rec_dirs,
+		fmt.Printf("%s,%s,%d,%d,%s,%d,%d,%s,%s,%s,%s,%d\n", dir.name, statticker.FormatBytes(dir.imm_size), dir.imm_files, dir.imm_dirs,
+			statticker.FormatBytes(dir.rec_size), dir.rec_files, dir.rec_dirs,
 			mod2str(dir.imm_old_file, start), mod2str(dir.imm_new_file, start), mod2str(dir.rec_old_file, start), mod2str(dir.rec_new_file, start),
 			depth)
 	} else {

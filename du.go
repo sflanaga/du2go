@@ -15,8 +15,14 @@ import (
 	"time"
 
 	"github.com/google/btree"
+	"github.com/sflanaga/statticker"
 	"golang.org/x/sync/semaphore"
 )
+
+var totalSize = statticker.NewStat("bytes", statticker.Bytes)
+var countFiles = statticker.NewStat("files", statticker.Count)
+var countDirs = statticker.NewStat("dir", statticker.Count)
+var goroutines = statticker.NewStat("goroutines", statticker.Gauge)
 
 type DirInfo struct {
 	name         string
@@ -103,15 +109,15 @@ var fsFilter = map[string]bool{
 	"/sys":  true,
 }
 
-func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers *int32, goroutine bool, depth int) {
+func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutine bool, depth int) {
 	if goroutine {
 		// we need to release the allocated thread/goroutine if we stop early
 		// we only need to do this when we did NOT steal the next directory/task
 		// also note that defer DOES work conditionally here because it works at
 		// the end of the current function and NOT the current scope
+		goroutines.Add(1)
+		defer goroutines.Add(-1)
 		defer limitworkers.Release(1)
-		atomic.AddInt32(&goroutines, 1)
-		defer atomic.AddInt32(&goroutines, -1)
 	}
 
 	// goofy special filters
@@ -141,17 +147,17 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers 
 		if file.IsDir() {
 			subdir := NewDirInfo(cleanPath)
 			dir.children = append(dir.children, subdir)
-			atomic.AddUint64(&countDirs, 1)
+			// atomic.AddUint64(&countDirs, 1)
+			countDirs.Add(1)
 			dir.imm_dirs++
 			dir.rec_dirs++
 			// fmt.Println(cleanPath, file.IsDir())
 			// cheesey simple work-stealing
 
 			if limitworkers.TryAcquire(1) {
-				// if atomic.LoadInt32(workers) < limitworkers {
-				go walkGo(debug, subdir, limitworkers, workers, true, depth+1)
+				go walkGo(debug, subdir, limitworkers, true, depth+1)
 			} else {
-				walkGo(debug, subdir, limitworkers, workers, false, depth+1)
+				walkGo(debug, subdir, limitworkers, false, depth+1)
 			}
 		} else if file.Type().IsRegular() || (fs.ModeIrregular&file.Type() != 0) {
 			stats, err_st := file.Info()
@@ -169,8 +175,10 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, workers 
 			if stats.ModTime().Unix() < oldest {
 				oldest = stats.ModTime().Unix()
 			}
-			atomic.AddUint64(&countFiles, 1)
-			atomic.AddUint64(&totalSize, uint64(sz))
+			countFiles.Add(1)
+			totalSize.Add(int64(sz))
+			// atomic.AddUint64(&countFiles, 1)
+			// atomic.AddUint64(&totalSize, uint64(sz))
 
 			dir.imm_size += uint64(sz)
 			dir.rec_size += uint64(sz)
@@ -250,7 +258,7 @@ func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string, flatUn
 			if flatUnits {
 				fmt.Printf("%12d %s\n", uint64(value.size), value.path)
 			} else {
-				fmt.Printf("%8s %s\n", formatBytes(uint64(value.size)), value.path)
+				fmt.Printf("%8s %s\n", statticker.FormatBytes(uint64(value.size)), value.path)
 			}
 		} else {
 			fmt.Printf("%8d %s\n", value.size, value.path)
@@ -272,7 +280,47 @@ func printSkipAndError() {
 	}
 }
 
+func myPrinter(t *statticker.Ticker, samplePeriod time.Duration, finalOutput bool) {
+	timeStr := float64(time.Since(t.StartTime).Milliseconds()) / 1000.0
+	if finalOutput {
+		t.Buf = fmt.Appendf(t.Buf, "OVERALL[%s] %0.3f ", t.Msg, timeStr)
+	} else {
+		t.Buf = fmt.Appendf(t.Buf, "%s %0.3f ", t.Msg, timeStr)
+	}
+	for _, sample := range t.Samples {
+		var ratePerSec float64
+		if !finalOutput {
+			ratePerSec = float64(sample.Delta) / float64(samplePeriod.Seconds())
+		} else {
+			ratePerSec = float64(sample.Delta) / float64(samplePeriod.Seconds())
+		}
+		// fmt.Printf("%f  %f\n", float64(sample.delta), float64(samplePeriod.Seconds()))
+		switch sample.Stype {
+		case statticker.Bytes:
+			t.Buf = fmt.Appendf(t.Buf, " %s: %s/s, %s", *sample.Name, statticker.FormatBytes(uint64(ratePerSec)), statticker.FormatBytes(uint64(sample.Value)))
+		case statticker.Count:
+			t.Buf = fmt.Appendf(t.Buf, " %s: %s/s, %s", *sample.Name, statticker.AddCommas(uint64(ratePerSec)), statticker.AddCommas(uint64(sample.Value)))
+		case statticker.Gauge:
+			t.Buf = fmt.Appendf(t.Buf, " %s: %s", *sample.Name, statticker.AddCommas(uint64(sample.Value)))
+		}
+	}
+	fmt.Fprintln(os.Stderr, string(t.Buf))
+
+}
+
 func main() {
+
+	// var sl []*statticker.TStat
+	// var count = statticker.Stat("count").StatType(Count)
+	// var bytes = Stat("bytes").StatType(Bytes)
+	// sl = append(sl, count)
+	// sl = append(sl, Stat("goroutines").StatType(Gauge).SetExternal(func() int64 { return int64(runtime.NumGoroutine()) }))
+	// sl = append(sl, bytes)
+
+	// // liltest()
+
+	// os.Exit(0)
+
 	start := time.Now()
 
 	rootDir := flag.String("d", ".", "root directory to scan")
@@ -306,19 +354,24 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Error getting absolute path:", err)
 		return
 	}
-	// wg := &sync.WaitGroup{}
-	var msg = "tree scan"
-	var ticker *time.Ticker = nil
 
+	var statList []*statticker.Stat
+	statList = append(statList, countFiles)
+	statList = append(statList, countDirs)
+	statList = append(statList, totalSize)
+
+	var ticker *statticker.Ticker
 	if ticker_duration.Seconds() != 0 {
-		ticker = create_start_ticker(&msg, ticker_duration)
+		ticker = statticker.NewTicker("stats monitor", *ticker_duration, statList)
+		ticker.WithPrinter(myPrinter)
+		ticker.Start()
 	}
+
 	root := NewDirInfo(absPath)
-	goroutines = int32(0)
 	var ctx = context.Background()
 
 	workerSema.Acquire(ctx, 1)
-	walkGo(*debug, root, workerSema, &goroutines, true, 0)
+	walkGo(*debug, root, workerSema, true, 0)
 	// wg.Wait()
 	workerSema.Acquire(ctx, int64(*threadLimit))
 
@@ -328,7 +381,7 @@ func main() {
 	// }
 
 	elapse := time.Since(start)
-	if ticker_duration.Seconds() != 0 {
+	if ticker != nil {
 		ticker.Stop()
 	}
 
@@ -367,7 +420,7 @@ func main() {
 			if *flatUnits {
 				fmt.Printf("%12d %s\n", uint64(value.size), value.path)
 			} else {
-				fmt.Printf("%8s %s\n", formatBytes(uint64(value.size)), value.path)
+				fmt.Printf("%8s %s\n", statticker.FormatBytes(uint64(value.size)), value.path)
 			}
 			return true
 		})
@@ -382,7 +435,8 @@ func main() {
 		fmt.Println()
 		printSkipAndError()
 		fmt.Println()
-		fmt.Println("Total size:", formatBytes(uint64(totalSize)), "in", countFiles, "files and", countDirs, "directories", "done in", elapse)
+		fmt.Println("Total size:", statticker.FormatBytes(totalSize.Get()), "in",
+			statticker.AddCommas(countFiles.Get()), "files and", countDirs.Get(), "directories", "done in", elapse)
 	}
 
 }
