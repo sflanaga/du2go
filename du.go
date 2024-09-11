@@ -58,21 +58,12 @@ func NewDirInfo(name string) *DirInfo {
 	}
 }
 
-type UserSize struct {
-	size int64
-	user string
-}
-
 type PathSize struct {
 	size int64
 	path string
 }
 
 func pathSizeLess(a, b PathSize) bool {
-	return a.size < b.size
-}
-
-func userSizeLess(a, b UserSize) bool {
 	return a.size < b.size
 }
 
@@ -148,6 +139,12 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutin
 		defer limitworkers.Release(1)
 	}
 
+	user := UserStats{NULL_USER_ID, 0, 0, 0}
+	defer func() {
+		loadUserInfo(user)
+		// println("loading user info")
+	}()
+
 	// goofy special filters
 	if depth <= 1 {
 		if _, ok := fsFilter[dir.name]; ok {
@@ -181,6 +178,14 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutin
 			dir.rec_dirs++
 			// fmt.Println(cleanPath, file.IsDir())
 			// cheesey simple work-stealing
+
+			stats, err_st := file.Info()
+			if err_st == nil {
+				uid := getUserId(&stats)
+				user.addDir(uid)
+			} else {
+				println("error on ", cleanPath, " of ", err_st)
+			}
 
 			if limitworkers.TryAcquire(1) {
 				go walkGo(debug, subdir, limitworkers, true, depth+1)
@@ -223,6 +228,8 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutin
 
 			maxFiles.setMaxFile(sz, &cleanPath)
 
+			uid := getUserId(&stats)
+			user.addFile(uid, uint64(sz))
 		} else {
 			atomic.AddUint64(&notDirOrFile, 1)
 			countFileTypes.Compute(file.Type(), func(oldValue int, loaded bool) (newValue int, delete bool) {
@@ -241,6 +248,7 @@ func walkGo(debug bool, dir *DirInfo, limitworkers *semaphore.Weighted, goroutin
 			}
 		}
 	}
+	// loadUserInfo(user)
 
 }
 
@@ -338,23 +346,6 @@ func duStatPrinter(t *statticker.Ticker, samplePeriod time.Duration, finalOutput
 }
 
 func main() {
-	p := path.Base(os.Args[0])
-	s, _ := os.Stat(p)
-	x := getUserId(&s)
-	println("file: ", p, "uid: ", x)
-
-	os.Exit(1)
-
-	// var sl []*statticker.TStat
-	// var count = statticker.Stat("count").StatType(Count)
-	// var bytes = Stat("bytes").StatType(Bytes)
-	// sl = append(sl, count)
-	// sl = append(sl, Stat("goroutines").StatType(Gauge).SetExternal(func() int64 { return int64(runtime.NumGoroutine()) }))
-	// sl = append(sl, bytes)
-
-	// // liltest()
-
-	// os.Exit(0)
 
 	start := time.Now()
 
@@ -407,13 +398,8 @@ func main() {
 
 	workerSema.Acquire(ctx, 1)
 	walkGo(*debug, root, workerSema, true, 0)
-	// wg.Wait()
-	workerSema.Acquire(ctx, int64(*threadLimit))
 
-	// for !workerSema.TryAcquire(int64(*threadLimit)) {
-	// 	fmt.Println("cannot get semaphore")
-	// 	time.Sleep(time.Duration(1 * 1_000_000_000))
-	// }
+	workerSema.Acquire(ctx, int64(*threadLimit))
 
 	elapse := time.Since(start)
 	if ticker != nil {
@@ -421,23 +407,6 @@ func main() {
 	}
 
 	treePerk(root, 0)
-
-	// if *dumpFullDetails {
-	// 	treeWalkDetails(root, 0, &start)
-	// }
-
-	// global max files size
-	// max dirs imm size
-	// max dirs imm file count
-	// max dirs file size recursive
-	// max dir by rec count
-
-	// mm := btree.NewMap[int64, string](16)
-
-	// mm.Scan(func(key int64, value string) bool {
-	// 	fmt.Printf("%s %s\n", formatBytes(uint64(key)), value)
-	// 	return true
-	// })
 
 	fmt.Printf("Scanned directory path: %s\n", *rootDir)
 
@@ -469,7 +438,10 @@ func main() {
 		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it", *flatUnits)
 		fmt.Println()
 		printSkipAndError()
-		fmt.Println()
+		if !isWindows {
+			fmt.Println()
+			printUserInfo(*summaryLimit)
+		}
 		fmt.Println("Total size:", statticker.FormatBytes(totalSize.Get()), "in",
 			statticker.AddCommas(countFiles.Get()), "files and", countDirs.Get(), "directories", "done in", elapse)
 	}

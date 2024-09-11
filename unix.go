@@ -9,7 +9,6 @@ import (
 )
 
 func getUserId(fileInfo *fs.FileInfo) uint32 {
-	var uid uint32
-	uid = (*fileInfo).Sys().(*syscall.Stat_t).Uid
+	uid := (*fileInfo).Sys().(*syscall.Stat_t).Uid
 	return uid
 }
