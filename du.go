@@ -10,6 +10,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -304,7 +305,7 @@ func printSummary(tree *btree.BTreeG[PathSize], bytes bool, title string, flatUn
 	})
 }
 
-func printSkipAndError() {
+func reportAnyScanErrors() {
 	if filestatErrors > 0 {
 		fmt.Printf("%8d file stat errors\n", filestatErrors)
 	}
@@ -353,10 +354,18 @@ func main() {
 	ticker_duration := flag.Duration("i", 1*time.Second, "ticker duration")
 	dumpFullDetails := flag.Bool("D", false, "dump full details")
 	flatUnits := flag.Bool("F", false, "use basic units for size and age - useful for simpler post processing")
+	reports := flag.String("R", "lifdru", "Top stats reports: \n l - largest file\n i - directories by total file size immediately in it\n f - directories by file count immediately in it\n d - directories by directory count immediately in it\n r - directories by total file size recursively in it\n u - total file usage by user id\n")
 	cpuNum := runtime.NumCPU()
 	threadLimit := flag.Int("t", cpuNum, "limit number of threads")
-	summaryLimit := flag.Int("l", 10, "limit summaries to N number")
-	debug := flag.Bool("v", false, "keep intermediate error messages quiet")
+	summaryLimit := flag.Int("l", 10, "limit stat reports to the top N")
+	debug := flag.Bool("v", false, "write per file/directory errors during scan")
+
+	for _, x := range *reports {
+		if !strings.ContainsRune("lifdru", x) {
+			fmt.Printf("Unknown -R sub option: '%c'\n", x)
+			os.Exit(1)
+		}
+	}
 
 	var workerSema = semaphore.NewWeighted(int64(*threadLimit))
 
@@ -378,7 +387,7 @@ func main() {
 	absPath, err := filepath.Abs(*rootDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error getting absolute path:", err)
-		return
+		os.Exit(3)
 	}
 
 	var statList []*statticker.Stat
@@ -412,35 +421,48 @@ func main() {
 
 	_startTime := time.Now()
 	walkTreeSummary(root, *summaryLimit, 0)
-	fmt.Printf("walkTreeSummary, Execution time: %v\n", time.Since(_startTime))
+	fmt.Printf("post scan report computer time: %v\n", time.Since(_startTime))
 
 	if *dumpFullDetails {
 		treeWalkDetails(root, 0, &start, *flatUnits)
 		fmt.Println()
-		printSkipAndError()
+		reportAnyScanErrors()
 	} else {
-		fmt.Println("Largest files (globally)")
-		maxFiles.mapMax.Descend(func(value PathSize) bool {
-			if *flatUnits {
-				fmt.Printf("%12d %s\n", uint64(value.size), value.path)
-			} else {
-				fmt.Printf("%8s %s\n", statticker.FormatBytes(uint64(value.size)), value.path)
+		for _, x := range *reports {
+			switch x {
+			case 'l':
+				fmt.Println("Largest files (globally)")
+				maxFiles.mapMax.Descend(func(value PathSize) bool {
+					if *flatUnits {
+						fmt.Printf("%12d %s\n", uint64(value.size), value.path)
+					} else {
+						fmt.Printf("%8s %s\n", statticker.FormatBytes(uint64(value.size)), value.path)
+					}
+					return true
+				})
+			case 'i':
+				fmt.Println()
+				printSummary(maxDirByImmSize, true, "directories by total file size immediately in it", *flatUnits)
+			case 'f':
+				fmt.Println()
+				printSummary(maxDirByImmCount, false, "directories by file count immediately in it", *flatUnits)
+			case 'd':
+				fmt.Println()
+				printSummary(maxDirByRecSize, true, "directories by total file size recursively in it", *flatUnits)
+			case 'r':
+				fmt.Println()
+				printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it", *flatUnits)
+			case 'u':
+				fmt.Println()
+				if !isWindows {
+					printUserInfo(*summaryLimit)
+				} else {
+					fmt.Println("user id not supported on windows")
+				}
+			default:
+				fmt.Printf("Unknown -R sub option: '%c' skipped\n", x)
 			}
-			return true
-		})
-		fmt.Println()
-		printSummary(maxDirByImmSize, true, "directories by total file size immediately in it", *flatUnits)
-		fmt.Println()
-		printSummary(maxDirByImmCount, false, "directories by file count immediately in it", *flatUnits)
-		fmt.Println()
-		printSummary(maxDirByImmDirCount, false, "directories by directory count immediately in it", *flatUnits)
-		fmt.Println()
-		printSummary(maxDirByRecSize, true, "directories by total file size recursively in it", *flatUnits)
-		fmt.Println()
-		printSkipAndError()
-		if !isWindows {
-			fmt.Println()
-			printUserInfo(*summaryLimit)
+
 		}
 		fmt.Println("Total size:", statticker.FormatBytes(totalSize.Get()), "in",
 			statticker.AddCommas(countFiles.Get()), "files and", countDirs.Get(), "directories", "done in", elapse)

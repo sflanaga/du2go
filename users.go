@@ -109,6 +109,7 @@ func cmpUserStatsSort(i, j UserStats) int {
 
 func printUserInfo(limit int) {
 	if userMap.Size() > 0 {
+		fmt.Println("Total file usage by user id")
 		fmt.Printf("%6s  %8s %8s %8s   uniq users: %d, switch users: %d\n", "UID", "Space", "Files", "Dirs", userMap.Size(), switchUserCount)
 		var list = make([]UserStats, userMap.Size())
 		userMap.Range(func(key uint32, value UserStats) bool {
